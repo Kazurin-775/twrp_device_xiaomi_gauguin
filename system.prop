@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+
+# TWRP system.prop for Xiaomi Gauguin
+# Minimum props needed in recovery
+
+# ADB
+ro.adb.secure=0
+ro.boot.dynamic_partitions=true
+
+# Gatekeeper — disable SPU (matching TWRP FBE pattern from gauguin stock)
+vendor.gatekeeper.disable_spu=true
+vendor.gatekeeper.is_security_level_spu=0
+
+# Battery
+ro.charger.enable_suspend=1
+
+# USB — configfs + gadget HAL
+vendor.usb.configfs=1
+vendor.usb.rps_mask=0
+vendor.usb.uvc.function.init=1

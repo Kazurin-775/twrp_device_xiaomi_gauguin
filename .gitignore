@@ -1,0 +1,5 @@
+# Locally-generated build artifacts
+*.img
+Image
+*.zip
+*.tar

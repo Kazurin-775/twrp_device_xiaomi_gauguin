@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The LineageOS Project
+# SPDX-License-Identifier: Apache-2.0
+
+# TWRP init.recovery.qcom.rc for Xiaomi Gauguin
+# Adapted from gauguin stock init.recovery.qcom.rc + minimal TWRP additions
+
+on init
+    write /sys/class/backlight/panel0-backlight/brightness 800
+    setprop sys.usb.configfs 1
+
+on early-fs
+    write /proc/sys/walt/sched_lib_name "recovery,Updater,updater"
+    write /proc/sys/walt/sched_lib_mask_force 255
+
+on property:ro.boot.usbcontroller=*
+    setprop sys.usb.controller ${ro.boot.usbcontroller}
+    write /sys/class/udc/${ro.boot.usbcontroller}/device/../mode peripheral
+
+on fs
+    wait /dev/block/platform/soc/${ro.boot.bootdevice}
+    symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
+    chmod 0664 /dev/ion
+    chown system system /dev/ion
+    # persist is mounted read-only through recovery.fstab — do NOT mount here
+    install_keyring
+
+on boot
+    setprop sys.usb.config adb
+
+on property:servicemanager.ready=true
+    setprop sys.boot_completed 1
