@@ -115,23 +115,49 @@ def extract(img_path, out_dir):
     else:
         print(f"!!! Kernel OOR (off=0x{kernel_off:x} sz={ks})")
 
-    # DTB from embedded section (AOSP v2+ or v4)
+    # DTB — try header fields first, then fall back to FDT magic scan
+    dtb_found = False
     if hdr["dtb_size"] and hdr["dtb_offset"]:
         blob = data[hdr["dtb_offset"]:hdr["dtb_offset"] + hdr["dtb_size"]]
         p = os.path.join(out_dir, "dtb.img")
         open(p, "wb").write(blob)
         print(f"==> DTB:    {p} ({len(blob)} bytes @ 0x{hdr['dtb_offset']:x})")
-    else:
+        dtb_found = True
+
+    if not dtb_found:
+        # Scan for FDT magic anywhere after the ramdisk
+        fdt_magic = b"\xd0\x0d\xfe\xed"
+        scan_start = align_up(kernel_off + hdr["kernel_size"] + hdr["ramdisk_size"] + hdr["second_size"], page)
+        idx = data.find(fdt_magic, scan_start)
+        if idx >= 0:
+            dtb_size = struct.unpack(">I", data[idx + 4:idx + 8])[0]
+            blob = data[idx:idx + dtb_size]
+            p = os.path.join(out_dir, "dtb.img")
+            open(p, "wb").write(blob)
+            print(f"==> DTB:    {p} ({dtb_size} bytes @ 0x{idx:x}, FDT magic scan)")
+            dtb_found = True
+
+    if not dtb_found:
         print("    (no embedded dtb in boot — use separate dtbo partition)")
 
-    # Second (usually ramdisk for v1, dtbo/dtb for v2+)
+    # Second (usually dtbo for v2/v4, ramdisk for v1)
     if hdr["second_size"]:
         sec_off = align_up(kernel_off + hdr["kernel_size"] + hdr["ramdisk_size"], page)
         blob = data[sec_off:sec_off + hdr["second_size"]]
         if blob:
-            p = os.path.join(out_dir, "second.img")
-            open(p, "wb").write(blob)
-            print(f"==> Second: {p} ({len(blob)} bytes @ 0x{sec_off:x}, first 8: {blob[:8].hex()})")
+            # Detect DTBO magic and trim to actual size
+            dtbo_magic = b"\xd7\xb7\xab\x1e"
+            dtbo_idx = blob.find(dtbo_magic)
+            if dtbo_idx >= 0:
+                dtbo_size = struct.unpack(">I", blob[dtbo_idx + 4:dtbo_idx + 8])[0]
+                trimmed = blob[dtbo_idx:dtbo_idx + dtbo_size]
+                p = os.path.join(out_dir, "recovery_dtbo")
+                open(p, "wb").write(trimmed)
+                print(f"==> recovery_dtbo: {p} ({len(trimmed)} bytes @ 0x{sec_off + dtbo_idx:x}, embedded in 'second' slot)")
+            else:
+                p = os.path.join(out_dir, "second.img")
+                open(p, "wb").write(blob)
+                print(f"==> Second:        {p} ({len(blob)} bytes @ 0x{sec_off:x}, first 8: {blob[:8].hex()})")
 
 def main():
     ap = argparse.ArgumentParser(description="Extract kernel + dtb from Android boot.img")

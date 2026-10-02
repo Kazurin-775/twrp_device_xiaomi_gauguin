@@ -1,5 +1,6 @@
 # Locally-generated build artifacts
 *.img
 Image
+recovery_dtbo
 *.zip
 *.tar

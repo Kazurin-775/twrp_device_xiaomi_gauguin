@@ -84,11 +84,26 @@ else
     echo "    If header_version >= 3, dtb is usually in vendor_boot, not boot." >&2
 fi
 
-# ── extract dtbo (optional, for reference) ───────────────────────────────────
-DTBO_FILE="$(ls "$WORK_DIR"/*-second 2>/dev/null || true)"
-if [[ -n "$DTBO_FILE" && -s "$DTBO_FILE" ]]; then
-    cp "$DTBO_FILE" "$OUT_DIR/dtbo.img"
-    echo "==> DTBO:    $OUT_DIR/dtbo.img  ($(stat -f%z "$OUT_DIR/dtbo.img") bytes)"
+# ── extract recovery_dtbo from second slot ───────────────────────────────────
+# Header v2 packs DTBO into the "second" slot (no dedicated field). Detect
+# DTBO magic 0xd7b7ab1e and trim to the embedded total_size.
+SECOND_FILE="$(ls "$WORK_DIR"/*-second 2>/dev/null || true)"
+if [[ -n "$SECOND_FILE" && -s "$SECOND_FILE" ]]; then
+    # Check for DTBO magic (big-endian: 1e ab b7 d7 → hex 1eabb7d7)
+    if xxd -p -l 1024 "$SECOND_FILE" | tr -d '\n' | grep -q '1eabb7d7'; then
+        # Find DTBO magic offset and extract exact size
+        DTBO_OFFSET=$(xxd -p "$SECOND_FILE" | tr -d '\n' | grep -ob '1eabb7d7' | head -1 | cut -d: -f1)
+        # Each hex char = 4 bits, so DTBO_OFFSET is in hex chars; /2 = bytes
+        DTBO_OFFSET=$(( DTBO_OFFSET / 2 ))
+        # total_size is big-endian uint32 at offset+4
+        DTBO_SIZE_HEX=$(xxd -s $((DTBO_OFFSET + 4)) -l 4 -p "$SECOND_FILE")
+        DTBO_SIZE=$(( 16#$DTBO_SIZE_HEX ))
+        dd if="$SECOND_FILE" of="$OUT_DIR/recovery_dtbo" bs=1 skip=$DTBO_OFFSET count=$DTBO_SIZE 2>/dev/null
+        echo "==> recovery_dtbo: $OUT_DIR/recovery_dtbo  ($DTBO_SIZE bytes @ offset $DTBO_OFFSET)"
+    else
+        cp "$SECOND_FILE" "$OUT_DIR/second.img"
+        echo "==> Second:        $OUT_DIR/second.img  ($(stat -f%z "$OUT_DIR/second.img") bytes, no DTBO magic)"
+    fi
 fi
 
 # ── header dump (debug) ──────────────────────────────────────────────────────

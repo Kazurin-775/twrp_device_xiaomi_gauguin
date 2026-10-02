@@ -29,9 +29,11 @@ TARGET_USES_UEFI := true
 # Assert
 TARGET_OTA_ASSERT_DEVICE := gauguin,gauguinpro,gauguininpro
 
-# DTB — embed prebuilt dtb in recovery image (even though stock uses separate dtbo partition)
+# DTB/DTBO
+# Header v2 has no dedicated DTBO field — pack DTBO into the "second" slot
 TARGET_PREBUILT_DTB := $(DEVICE_PATH)/prebuilt/dtb.img
 BOARD_MKBOOTIMG_ARGS += --dtb $(TARGET_PREBUILT_DTB)
+BOARD_MKBOOTIMG_ARGS += --second $(DEVICE_PATH)/prebuilt/recovery_dtbo
 
 # Kernel: 4.19 (lito platform), no dlkm — vendor modules are built into
 # the vendor partition, no separate vendor_dlkm/system_dlkm images exist.
