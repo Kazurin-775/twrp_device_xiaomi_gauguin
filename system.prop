@@ -2,20 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # TWRP system.prop for Xiaomi Gauguin
-# Minimum props needed in recovery
 
-# ADB
-ro.adb.secure=0
-ro.boot.dynamic_partitions=true
-
-# Gatekeeper — disable SPU (matching TWRP FBE pattern from gauguin stock)
-vendor.gatekeeper.disable_spu=true
-vendor.gatekeeper.is_security_level_spu=0
-
-# Battery
-ro.charger.enable_suspend=1
-
-# USB — configfs + gadget HAL
-vendor.usb.configfs=1
-vendor.usb.rps_mask=0
-vendor.usb.uvc.function.init=1
+# Crypto / FBE (dm-default-key) — needed for qcom_decrypt FBE key access
+ro.crypto.dm_default_key.options_format.version=2
+ro.crypto.volume.metadata.method=dm-default-key
+ro.crypto.volume.filenames_mode=aes-256-cts
+ro.crypto.volume.options=::v2
+ro.hardware.keystore_desede=true
