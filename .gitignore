@@ -4,3 +4,9 @@ Image
 recovery_dtbo
 *.zip
 *.tar
+
+# Vendor blobs pulled by tools/extract_blobs.sh — not tracked, but the VINTF
+# manifest (Apache-2.0, from the ROM tree) must ship in the repo.
+/recovery/root/system/lib64
+/recovery/root/vendor/bin
+/recovery/root/vendor/lib64

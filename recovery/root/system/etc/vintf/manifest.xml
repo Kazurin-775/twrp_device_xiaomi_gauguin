@@ -1,0 +1,17 @@
+<!--
+    Framework-side VINTF manifest for recovery.
+    servicemanager refuses to register AIDL services that are not declared in
+    the caller's VINTF manifest ("NULL VINTF MANIFEST!: framework"), which made
+    keystore2 panic-loop on startup. Declaring IKeystoreService/default here
+    lets keystore2 register and unblocks the metadata decryption chain.
+    Must stay parseable by TWRP's libvintf (4.0) — keep it minimal.
+-->
+<manifest version="1.0" type="framework">
+    <hal format="aidl">
+        <name>android.system.keystore2</name>
+        <interface>
+            <name>IKeystoreService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>

@@ -2,16 +2,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
 on init
-    setprop sys.usb.configfs 1
     write /sys/class/backlight/panel0-backlight/brightness 800
-
-on property:ro.boot.usbcontroller=*
-    setprop sys.usb.controller ${ro.boot.usbcontroller}
-    write /sys/class/udc/${ro.boot.usbcontroller}/device/../mode peripheral
+    # Keymaster + QSEE run from ramdisk blobs (recovery/root/vendor/) so that
+    # keystore2 can retrieve the metadata encryption key without mounting /vendor.
+    start vendor.qseecomd
 
 on fs
     wait /dev/block/platform/soc/${ro.boot.bootdevice}
     symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
 
+on property:init.svc.vendor.qseecomd=running
+    start keymaster-4-0
+
+# USB (gadget setup, functionfs mounts, adbd start/UDC bind) lives in
+# init.recovery.usb.rc. Here we only request the adb configuration once the
+# configfs backend is up.
 on boot
     setprop sys.usb.config adb
+
+service vendor.qseecomd /vendor/bin/qseecomd
+    class core
+    user root
+    group root
+    setenv LD_LIBRARY_PATH /vendor/lib64
+    seclabel u:r:recovery:s0
+
+service keymaster-4-0 /vendor/bin/hw/android.hardware.keymaster@4.0-service-qti
+    class core
+    disabled
+    user root
+    group root system drmrpc
+    setenv LD_LIBRARY_PATH /vendor/lib64
+    seclabel u:r:recovery:s0

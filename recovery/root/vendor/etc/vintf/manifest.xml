@@ -1,0 +1,14 @@
+<!--
+    Minimal device VINTF manifest for recovery.
+    Must stay parseable by TWRP's libvintf (4.0) — do NOT copy the full ROM
+    manifest here (manifest.version 9.0 fails to parse and hwservicemanager
+    then refuses HAL registration).
+    extract_blobs.sh intentionally does NOT pull this file.
+-->
+<manifest version="1.0" type="device">
+    <hal format="hidl">
+        <name>android.hardware.keymaster</name>
+        <transport>hwbinder</transport>
+        <fqname>@4.0::IKeymasterDevice/default</fqname>
+    </hal>
+</manifest>

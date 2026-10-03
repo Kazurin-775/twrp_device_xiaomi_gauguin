@@ -70,6 +70,70 @@ Matches the original gauguin ROM tree (RSA4096, not RSA2048 like newer devices).
 
 ## Encryption / FBE
 
+### Service chain (all from ramdisk blobs)
+
+`init.recovery.qcom.rc` starts `vendor.qseecomd`, then `keymaster-4-0`
+(`/vendor/bin/hw/android.hardware.keymaster@4.0-service-qti`) once qseecomd is
+running. Blobs are pulled from the running ROM with `tools/extract_blobs.sh`
+(read-only adb pulls) into `recovery/root/vendor/`. The keymaster TA is loaded
+into the TEE by the bootloader from the `keymaster` partition — no TA firmware
+file exists on the filesystem.
+
+### USB
+
+`init.recovery.usb.rc` (CAF/AOSP standard) owns the whole gadget chain:
+configfs/functionfs setup, ffs mounts, `start adbd` on
+`sys.usb.config=adb && sys.usb.configfs=1`, UDC bind. `init.recovery.qcom.rc`
+only sets `sys.usb.config=adb` in `on boot`. Do NOT put `restart adbd` inside
+property triggers — `sys.usb.ffs.ready=1` refires on every adbd start and
+creates a 5-second kill loop.
+
+### VINTF manifests (two of them, both required)
+
+TWRP's libvintf is 4.0 — it cannot parse ROM manifests (`manifest.version 9.0`
+fails, hwservicemanager then refuses ALL HAL registrations).
+
+- **Device manifest** `recovery/root/vendor/etc/vintf/manifest.xml` — keymaster
+  HAL, `version="1.0"` (a bare `<manifest>` also fails to parse). Lets
+  keymaster register in hwservicemanager.
+- **Framework manifest** `recovery/root/system/etc/vintf/manifest.xml` — AIDL
+  `IKeystoreService/default`. servicemanager checks the framework manifest on
+  `add`; if it's NULL (missing), keystore2 panics in a lazy-start loop with
+  `NULL VINTF MANIFEST!: framework`.
+
+`extract_blobs.sh` intentionally does NOT pull either manifest.
+
+### Property workarounds (device.mk)
+
+- `ro.debuggable=1` per partition (odm/product/system_ext): without it,
+  post_process_props auto-appends `persist.sys.usb.config=none` to each
+  section; the merged ramdisk prop.default ends on `none` (last section wins)
+  and adbd never starts at boot.
+- `ro.build.version.security_patch` / `ro.vendor.build.security_patch` =
+  `2099-12-31` in system_ext (loaded last): keymaster 4.0 enforces
+  patchlevel binding (current >= key-creation levels; the metadata key was
+  created by the much newer ROM).
+- `PRODUCT_PACKAGES += libsqlite`: keystore2 needs it; ROM's libsqlite.so
+  references `ucol_setStrength_android` missing in TWRP 12.1's ICU.
+
+### Decryption status / open blocker
+
+TWRP 12.1's vold_decrypt path works up to keystore2 createOperation, which
+fails with `In upgrade_keyblob_if_required_with: Upgrade failed.
+Error::Km(ErrorCode(-8))` (INVALID_KEY_BLOB from the keymaster TA's
+upgradeKey). Leading hypotheses:
+
+1. The A16 ROM's vold created the metadata key via the **keymint (AIDL) chain**
+   — verify on HLOS with `ps -A | grep -iE "keymint|keymaster"`. If keymint
+   runs a different TA app than keymaster@4.0, the blob is in the wrong TA's
+   namespace and A12.1 TWRP fundamentally needs the keymint chain (the
+   twrp-xiaomi-17-series trees all do keymint + gatekeeper).
+2. TEE state lives on the persist partition (see below) — if persist is not
+   mounted in recovery, TA-side blob authentication can fail.
+
+Iterate on missing blobs by rebuilding and checking logcat for
+`cannot locate` / `CANNOT LINK` linker errors.
+
 Gauguin uses Qualcomm File-Based Encryption with `dm-default-key`. Decryption is handled by `qcom_decrypt` + `qcom_decrypt_fbe` from `hardware/qcom-caf/common` (pulled via `BOARD_USES_QCOM_FBE_DECRYPTION := true`).
 
 Fstab crypto flags (copied verbatim from stock `fstab.default`, do NOT change):
@@ -87,6 +151,10 @@ Metadata partition mount flags also match stock exactly (`data=journal,commit=1,
 - Fstab mounts it **read-only**.
 - 128 MB, ext4, on UFS.
 - Do NOT add `encryptable=footer` — that's FDE syntax, gauguin uses FBE.
+- **TA state lives here too**: some TEE apps store their data under
+  `/mnt/vendor/persist/data/`. If persist is not mounted in recovery,
+  TEE-side blob authentication may fail. Mounting read-only is fine for
+  reading TA state; deleting files here can permanently break DRM/TEE state.
 
 ## Hardware Probe Commands — SAFE ONLY
 
