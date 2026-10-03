@@ -21,22 +21,11 @@ PRODUCT_PACKAGES += \
 PRODUCT_PACKAGES += \
     libsqlite
 
-# post_process_props.py auto-appends persist.sys.usb.config=none to every
-# partition prop file that lacks ro.debuggable=1; the merged ramdisk
-# prop.default then ends with "none" (last section wins) and adbd never
-# starts at boot. Add ro.debuggable to each partition so every section
-# auto-appends "adb" instead.
+# ro.debuggable=1 ensures post_process_props.py appends "adb" instead of "none"
+# to every partition prop file, so adbd starts at boot.
 PRODUCT_ODM_PROPERTIES += ro.debuggable=1
 PRODUCT_PRODUCT_PROPERTIES += ro.debuggable=1
 PRODUCT_SYSTEM_EXT_PROPERTIES += ro.debuggable=1
-
-# Keymaster 4.0 enforces patchlevel binding: a key blob can only be used if
-# the current boot reports OS/vendor patchlevels >= the ones stamped at key
-# creation. The metadata key was created by the ROM (much newer), so report
-# 2099-12-31 to always pass. The system_ext section is loaded last in the
-# merged ramdisk prop.default, so these overrides win.
-PRODUCT_SYSTEM_EXT_PROPERTIES += ro.build.version.security_patch=2099-12-31
-PRODUCT_SYSTEM_EXT_PROPERTIES += ro.vendor.build.security_patch=2099-12-31
 
 # Dynamic partitions
 PRODUCT_USE_DYNAMIC_PARTITIONS := true

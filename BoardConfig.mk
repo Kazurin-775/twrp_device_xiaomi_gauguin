@@ -160,6 +160,15 @@ TW_NO_SCREEN_BLANK := true
 TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_RESETPROP := true
 
+# Read security patch levels from the mounted ROM partitions at runtime.
+# The HIDL keymaster-4-0 TA enforces patchlevel binding (current >= creation),
+# and an upgrade path bug makes it fail with -8/-33 when triggered. By reading
+# the real HLOS values from /system and /vendor build.prop we match exactly
+# what the blob was created with and avoid the TA demanding an upgrade at all.
+TW_OVERRIDE_PROPS_ADDITIONAL_PARTITIONS := vendor system
+TW_OVERRIDE_SYSTEM_PROPS := \
+    "ro.build.version.security_patch;ro.vendor.build.security_patch"
+
 TARGET_RECOVERY_DEVICE_MODULES += \
     libdmabufheap \
     libion \

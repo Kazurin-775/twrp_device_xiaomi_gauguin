@@ -25,24 +25,26 @@
 
 ## Build Environment
 
-**Manifest:** `https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp`, branch `twrp-12.1`.
+**Manifest:** `https://github.com/TWRP-Test/platform_manifest_twrp_aosp`, branch `twrp-16.0`.
 
-**Do NOT use 14.1** — it pulls Mainline-split modules (`packages/modules/Security/` providing `android.security.apc`) that cascade into missing ninja edges (`libtar` → `android.security.apc-ndk_platform`). The 12.1 manifest has these modules inline.
+This manifest uses AOSP 16.0.0_r1 as base and swaps in TWRP-Test forks:
+- `TWRP-Test/android_bootable_recovery` @ `twrp-16.0` (TWRP recovery with built-in security_patch override)
+- `TWRP-Test/android_system_vold` @ `twrp-16.0` (crypto/KeyStorage patches)
+- `TWRP-Test/android_system_security` @ `twrp-16.0` (keystore2 fork)
+- `TWRP-Test/android_vendor_twrp` @ `twrp-16.0` (vendor config)
+- Plus forked build system, ICU, SQLite, sepolicy etc.
+
+**Manifest layout:** `default.xml` (AOSP 16.0 base) includes `twrp-default.xml` (remove AOSP projects, add TWRP-Test forks) which includes `remove-minimal.xml` (strip unused AOSP modules). Also pulls Android 17.0.0_r1 `external/ublksrv` for UBLK support, LineageOS 23.2 for bash/nano/ntfs.
 
 Build recipe:
 ```bash
-repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp -b twrp-12.1
+repo init -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp -b twrp-16.0
 repo sync -j$(nproc)
 # place this tree at device/xiaomi/gauguin
 source build/envsetup.sh
-source device/xiaomi/gauguin/vendorsetup.sh   # sets ALLOW_MISSING_DEPENDENCIES=true
-lunch twrp_gauguin-eng
+lunch twrp_gauguin-bp2a-eng
 mka recoveryimage
 ```
-
-### vendorsetup.sh Quirk
-
-Minimal TWRP manifests may omit `tradefed_defaults` and other non-TWRP AOSP modules. `ALLOW_MISSING_DEPENDENCIES=true` tells soong to skip missing `defaults:` references at parse time. The SM8750 TWRP reference trees all have this line.
 
 ## Kernel Paths
 
@@ -103,36 +105,43 @@ fails, hwservicemanager then refuses ALL HAL registrations).
 
 `extract_blobs.sh` intentionally does NOT pull either manifest.
 
-### Property workarounds (device.mk)
+### Property workarounds (device.mk / BoardConfig.mk)
 
 - `ro.debuggable=1` per partition (odm/product/system_ext): without it,
   post_process_props auto-appends `persist.sys.usb.config=none` to each
   section; the merged ramdisk prop.default ends on `none` (last section wins)
   and adbd never starts at boot.
-- `ro.build.version.security_patch` / `ro.vendor.build.security_patch` =
-  `2099-12-31` in system_ext (loaded last): keymaster 4.0 enforces
-  patchlevel binding (current >= key-creation levels; the metadata key was
-  created by the much newer ROM).
+- `TW_OVERRIDE_SYSTEM_PROPS` + `TW_OVERRIDE_PROPS_ADDITIONAL_PARTITIONS := vendor system`
+  (BoardConfig.mk): TWRP's twrp.cpp mounts /system and /vendor at boot, reads
+  `ro.build.version.security_patch` from system's build.prop and
+  `ro.vendor.build.security_patch` from vendor's build.prop, then calls
+  `resetprop` to override the ramdisk defaults. This matches the real HLOS
+  patchlevels so the keymaster TA never demands a key upgrade. The previous
+  hardcoded `2099-12-31` prop was removed — it triggered TA upgrade demand
+  which the HIDL keymaster-4-0 upgrade path can't complete.
 - `PRODUCT_PACKAGES += libsqlite`: keystore2 needs it; ROM's libsqlite.so
   references `ucol_setStrength_android` missing in TWRP 12.1's ICU.
 
-### Decryption status / open blocker
+### Decryption status — OPEN (patchlevel binding hypothesis)
 
-TWRP 12.1's vold_decrypt path works up to keystore2 createOperation, which
-fails with `In upgrade_keyblob_if_required_with: Upgrade failed.
-Error::Km(ErrorCode(-8))` (INVALID_KEY_BLOB from the keymaster TA's
-upgradeKey). Leading hypotheses:
+**Proposed fix (not yet tested):** Switch to `twrp-16.0` manifest and use
+`TW_OVERRIDE_SYSTEM_PROPS` to read the real HLOS patchlevels from
+/system and /vendor build.prop at boot, matching the blob's creation values
+so the TA never demands an upgrade. This is the same mechanism the
+`recovery_device_generic_marmalade` reference tree uses.
 
-1. The A16 ROM's vold created the metadata key via the **keymint (AIDL) chain**
-   — verify on HLOS with `ps -A | grep -iE "keymint|keymaster"`. If keymint
-   runs a different TA app than keymaster@4.0, the blob is in the wrong TA's
-   namespace and A12.1 TWRP fundamentally needs the keymint chain (the
-   twrp-xiaomi-17-series trees all do keymint + gatekeeper).
-2. TEE state lives on the persist partition (see below) — if persist is not
-   mounted in recovery, TA-side blob authentication can fail.
+**Root cause analysis:**
+- TWRP 12.1 with hardcoded `2099-12-31` patchlevel triggers TA demand for
+  key upgrade (`KM_ERROR_KEY_REQUIRES_UPGRADE` = -62)
+- HIDL keymaster-4-0's upgrade path breaks in TWRP's partial TEE state
+  (`-8` = INCOMPATIBLE_BLOCK_MODE, or `-33` = INVALID_KEY_BLOB)
+- Fix: match HLOS patchlevels so TA accepts `begin` directly without upgrade
 
-Iterate on missing blobs by rebuilding and checking logcat for
-`cannot locate` / `CANNOT LINK` linker errors.
+**Remaining risks:**
+- `TW_OVERRIDE_SYSTEM_PROPS` mounts/unmounts partitions — need to verify the
+  logical partition paths resolve correctly before TWRP runs
+- If the override doesn't fire (e.g., build.prop not found), we're back to
+  2099-12-31 → same failure
 
 Gauguin uses Qualcomm File-Based Encryption with `dm-default-key`. Decryption is handled by `qcom_decrypt` + `qcom_decrypt_fbe` from `hardware/qcom-caf/common` (pulled via `BOARD_USES_QCOM_FBE_DECRYPTION := true`).
 
@@ -189,7 +198,7 @@ Never run: `su`, `dd` to block devices, `fastboot flash` anything without explic
 | Default brightness | 800 | init.recovery.qcom.rc | Calibrate |
 | Thermal zone (CPU temp) | thermal_zone14 | BoardConfig.mk | Verify correct zone number |
 | Touch/fingerprint/NFC modules | (none) | modules.load, TW_LOAD_VENDOR_MODULES | Load via kernel built-ins or add .ko paths |
-| qcom_decrypt_fbe availability | hardware/qcom-caf/common | device.mk | Confirm present in 12.1 manifest |
+| qcom_decrypt_fbe availability | hardware/qcom-caf/common | device.mk | Confirm present in twrp-16.0 manifest |
 | UFS storage controller | 1d84000.ufshc | recovery.fstab sysfs_path | From `androidboot.bootdevice` in cmdline |
 
 ## What Was Confirmed On Hardware
@@ -205,9 +214,9 @@ Never run: `su`, `dd` to block devices, `fastboot flash` anything without explic
 
 | Tree | Role |
 |---|---|
-| `android_device_xiaomi_gauguin/` (local) | Original LineageOS/PixelOS device tree — source of truth for partition sizes, AVB keys, crypto props, kernel config |
-| `twp-xiaomi-17-series/` (local) | 4 SM8750 TWRP trees — structural reference only. DO NOT copy config values (different generation, v4 headers, A/B, dlkm partitions) |
-| `https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp` | Build manifest — pin to `twrp-12.1` |
+| [PixelOS-Devices/android_device_xiaomi_gauguin](https://github.com/PixelOS-Devices/android_device_xiaomi_gauguin) | Original LineageOS/PixelOS device tree — source of truth for partition sizes, AVB keys, crypto props, kernel config |
+| [antocorvo3000/twrp-xiaomi-17-series](https://github.com/antocorvo3000/twrp-xiaomi-17-series) | Reference TWRP device trees (different generation, v4 headers, A/B, dlkm partitions) |
+| [TWRP-Test/platform_manifest_twrp_aosp](https://github.com/TWRP-Test/platform_manifest_twrp_aosp) | Build manifest — branch `twrp-16.0` |
 
 ## License
 
