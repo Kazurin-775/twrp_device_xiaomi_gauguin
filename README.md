@@ -127,10 +127,18 @@ on the filesystem.
 
 ```
 init.recovery.qcom.rc:
-  on fs: wait /dev/qseecom, chmod 0660
+  on init: chmod 0660 /dev/qseecom, chown system drmrpc
   on init: start vendor.qseecomd
   on property:init.svc.vendor.qseecomd=running: start keymaster-4-0
 ```
+
+The `chmod`/`chown` must run before qseecomd starts: the daemon **drops itself
+to uid 1000 (system)** right before spawning its listener threads, and without
+a ueventd rule (`recovery/root/vendor/etc/ueventd.rc`,
+`/dev/qseecom 0660 system drmrpc`) the node stays `0600 root:root` — every
+listener registration then fails with EACCES and the TA loses its reentrant
+callback services (RPMB, SSD, …). This mirrors the behaviors in the reference
+trees, which ship both the ueventd rule and the rc chmod.
 
 The keymaster HAL must not start before qseecomd. USB gadget setup lives entirely
 in `init.recovery.usb.rc` — don't touch `sys.usb.ffs.ready` with `restart adbd`,

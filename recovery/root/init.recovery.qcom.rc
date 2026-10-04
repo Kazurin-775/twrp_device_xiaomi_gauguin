@@ -3,6 +3,12 @@
 
 on init
     write /sys/class/backlight/panel0-backlight/brightness 800
+    # qseecomd drops itself to uid 1000 (system) before spawning its listener
+    # threads; without this the listener opens of /dev/qseecom fail with EACCES
+    # (the node defaults to 0600 root:root). Belt-and-braces with the ueventd
+    # rule in vendor/etc/ueventd.rc.
+    chmod 0660 /dev/qseecom
+    chown system drmrpc /dev/qseecom
     # Keymaster + QSEE run from ramdisk blobs (recovery/root/vendor/) so that
     # keystore2 can retrieve the metadata encryption key without mounting /vendor.
     start vendor.qseecomd

@@ -81,6 +81,37 @@ running. Blobs are pulled from the running ROM with `tools/extract_blobs.sh`
 into the TEE by the bootloader from the `keymaster` partition — no TA firmware
 file exists on the filesystem.
 
+### /dev/qseecom node mode (qseecomd listener registration)
+
+**Symptom:** every qseecomd hierarchy-1 listener registration (rpmb, ssd,
+secure_ui, atime, fs, gpfs, qisl, gp_reqcancel, ops) failed with
+`Error::opening QSEECom device` in TWRP — while the identical
+`open("/dev/qseecom", O_RDWR)` succeeded from the adb shell and from the
+keymaster HAL on the same boot. No kernel-side qseecom errors, no AVC denials,
+identical failure for init-started and manually-launched daemons and with the
+ramdisk or the real vendor mounted.
+
+**Root cause (proven by strace):** qseecomd **drops itself to uid/gid 1000
+(system)** — `setgid(1000)` + `setuid(1000)` +
+`capset(CAP_SYS_RAWIO|CAP_BLOCK_SUSPEND)` — immediately before spawning the
+listener threads. In TWRP the `/dev/qseecom` node keeps the driver default
+`0600 root:root` (TWRP ships no ueventd rule for it), so every listener open
+fails with plain-DAC **EACCES**. The shell and keymaster HAL open successfully
+because they run as root. On HLOS the same daemon works because the vendor
+ueventd rules grant system access to the node.
+
+**Fix** (mirrors the twrp-xiaomi-17-series ref trees, which do both):
+- `recovery/root/vendor/etc/ueventd.rc`: `/dev/qseecom 0660 system drmrpc` —
+  ueventd applies this at coldboot, the durable fix
+- `init.recovery.qcom.rc`: `chmod 0660` + `chown system drmrpc` in `on init`,
+  **before** `start vendor.qseecomd` — belt-and-braces; it must precede the
+  start because our qseecomd starts `on init`, earlier than the ref trees'
+  `on fs` chmod
+
+**Why it matters:** dead listeners mean the TA cannot make reentrant callbacks
+into the normal world (RPMB, SSD, …) — a candidate contributor to the
+metadata-key `begin` failure (`-8`/`-7`).
+
 ### USB
 
 `init.recovery.usb.rc` (CAF/AOSP standard) owns the whole gadget chain:
