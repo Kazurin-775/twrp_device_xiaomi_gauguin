@@ -39,4 +39,18 @@
             <instance>default</instance>
         </interface>
     </hal>
+    <!-- AIDL health HAL (vendor.health-default). AIDL servicemanager validates
+         BOTH registration and lookup for u:r:recovery:s0 callers against this
+         framework/recovery manifest, NOT the device manifest (observed:
+         addService returned -129 EX_TRANSACTION_FAILED with the entry only in
+         vendor/etc/vintf/manifest.xml, while keystore2 declared here is found
+         from recovery domain). HIDL HALs are unaffected — they register via
+         hwservicemanager, which uses the device manifest. -->
+    <hal format="aidl">
+        <name>android.hardware.health</name>
+        <interface>
+            <name>IHealth</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
 </manifest>

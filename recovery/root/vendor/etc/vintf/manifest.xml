@@ -19,4 +19,7 @@
         <transport>hwbinder</transport>
         <fqname>@1.0::IGatekeeper/default</fqname>
     </hal>
+    <!-- NOTE: AIDL HAL declarations (health, keystore2) do NOT belong here —
+         AIDL servicemanager validates recovery-domain callers against the
+         framework/recovery manifest in system/etc/vintf/manifest.xml. -->
 </manifest>

@@ -1,0 +1,26 @@
+# AIDL health HAL pulled from the ROM (see tools/extract_blobs.sh). Started
+# from init.recovery.qcom.rc on fs after /sys/class/power_supply/battery
+# appears.
+# DO NOT setenv LD_LIBRARY_PATH — putting /vendor/lib64 first shadows TWRP's
+# system libs with the ROM copies (libbase/libbinder/libc++), and the two
+# libbinder instances in one process corrupt binder parcels ("Expecting
+# header 0x53595354 but found 0x564e4452. Mixing copies of libbinder?"),
+# making addService fail with -129 and crash-loop the service. The ROM-only
+# vendor deps (android.hardware.health-V4-ndk.so) resolve via the default
+# recovery linker path; verified the binary runs without the override.
+service vendor.health-default /vendor/bin/hw/android.hardware.health-service.qti
+    class hal
+    user root
+    group root
+    capabilities WAKE_ALARM BLOCK_SUSPEND
+    file /dev/kmsg w
+    seclabel u:r:recovery:s0
+
+# Charger-mode variant; TWRP never class-starts charger, kept for parity.
+service vendor.charger /vendor/bin/hw/android.hardware.health-service.qti --charger
+    class charger
+    user root
+    group root wakelock input graphics
+    capabilities SYS_BOOT WAKE_ALARM BLOCK_SUSPEND
+    file /dev/kmsg w
+    seclabel u:r:recovery:s0

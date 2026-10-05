@@ -33,6 +33,12 @@ on fs
     start vendor.qseecomd
     start prepare-crypto
 
+    # Health HAL from ramdisk blobs: TWRP's battery monitor resolves
+    # IHealth/default over binder every 250 ms; without the service each
+    # iteration fails the AIDL+HIDL lookups and falls back to a fake 100%.
+    wait /sys/class/power_supply/battery
+    start vendor.health-default
+
 # prepare-crypto waits for the super mapper devices (created by TWRP during
 # Setup_Fstab_Partitions), temp-mounts system+vendor, resetprops the real
 # patchlevels and signals crypto.ready=1. keymaster must never start before

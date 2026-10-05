@@ -43,6 +43,13 @@ pull /vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so lib64/hw
 # libqcbor, libion, libcrypto, libbase, libcutils, libutils, libhidlbase,
 # libhardware, libc++) is already covered by the static list below.
 
+echo "==> health (battery % for TWRP's IHealth binder path)"
+# AIDL health service. Minimal dep set mirrors reference device trees
+# (binary + android.hardware.health-V4-ndk.so); the generic binder/libc
+# deps come from TWRP's system or the static list below.
+pull /vendor/bin/hw/android.hardware.health-service.qti bin/hw
+pull /vendor/lib64/android.hardware.health-V4-ndk.so lib64
+
 echo "==> vendor libs (union of live-OS proc maps of qseecomd + keymaster)"
 LIBS="
 libQSEEComAPI.so
