@@ -122,11 +122,22 @@ TARGET_USERIMAGES_USE_F2FS := true
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 TARGET_USES_MKE2FS := true
 
-# Metadata / Crypto / Platform version (needed for FBE init on PixelOS 17)
+# Metadata / Crypto
 BOARD_USES_METADATA_PARTITION := true
 BOARD_USES_QCOM_FBE_DECRYPTION := true
+
+# Super-version values (LOAD-BEARING for FBE decryption): keystore2 starts at
+# `on late-init`, strictly before prepare-crypto.sh can resetprop the real ROM
+# values, and caches the version/patchlevel props it reads at startup. The TA
+# compares these against tags stored in the RPMB key blobs; any requested tag
+# lower than the blob's triggers KEY_REQUIRES_UPGRADE (-62) then upgradeKey.
+# These ceiling values keep every tag >= any blob's, so upgradeKey always
+# succeeds (keys are not persisted; prepare-crypto.sh still feeds the real ROM
+# values to the keymaster HAL process, which starts later via crypto.ready).
 PLATFORM_VERSION := 99.87.36
 PLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)
+PLATFORM_SECURITY_PATCH := 2099-12-31
+VENDOR_SECURITY_PATCH := 2099-12-31
 
 # AVB
 BOARD_AVB_ENABLE := true
@@ -141,6 +152,11 @@ BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX := 1
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX_LOCATION := 1
 
+# Non-A/B — gauguin has no slot suffixes on super partition partitions.
+# AB_OTA_UPDATER=true causes Prepare_Super_Volume() to append _a/_b to
+# partition names, which makes fs_mgr_update_logical_partition() fail.
+AB_OTA_UPDATER := false
+
 # TWRP specific build flags
 TARGET_RECOVERY_QCOM_RTC_FIX := true
 TARGET_RECOVERY_PIXEL_FORMAT := BGRA_8888
@@ -154,20 +170,22 @@ TW_CUSTOM_CPU_TEMP_PATH := "/sys/devices/virtual/thermal/thermal_zone10/temp"
 TW_EXCLUDE_DEFAULT_USB_INIT := true
 TW_EXTRA_LANGUAGES := true
 TW_INCLUDE_CRYPTO := true
+# Keeps datamedia=true from process start (twrp.cpp main). Without it TWRP
+# treats /sdcard as settings storage, and UnMount_Main_Partitions unmounts
+# /data after DE decrypt; the PIN-time remount in Decrypt_Device then falls
+# back to the raw block device (Is_Decrypted is false until CE unlock) and
+# fails with EBUSY, so IGatekeeper::verify is never reached.
+RECOVERY_SDCARD_ON_DATA := true
 TW_NO_EXFAT_FUSE := true
 TW_NO_HAPTICS := true
 TW_NO_SCREEN_BLANK := true
 TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_RESETPROP := true
 
-# Read security patch levels from the mounted ROM partitions at runtime.
-# The HIDL keymaster-4-0 TA enforces patchlevel binding (current >= creation),
-# and an upgrade path bug makes it fail with -8/-33 when triggered. By reading
-# the real HLOS values from /system and /vendor build.prop we match exactly
-# what the blob was created with and avoid the TA demanding an upgrade at all.
-TW_OVERRIDE_PROPS_ADDITIONAL_PARTITIONS := vendor system
-TW_OVERRIDE_SYSTEM_PROPS := \
-    "ro.build.version.security_patch;ro.vendor.build.security_patch"
+# Patchlevel handling is split in two: the super-version block above covers
+# keystore2 (early read at `on late-init`), while recovery/root/system/bin/
+# prepare-crypto.sh resetprops the real HLOS values for the keymaster HAL
+# process, which starts later via crypto.ready (see init.recovery.qcom.rc).
 
 TARGET_RECOVERY_DEVICE_MODULES += \
     libdmabufheap \

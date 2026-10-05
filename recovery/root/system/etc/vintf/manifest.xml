@@ -1,12 +1,37 @@
 <!--
     Framework-side VINTF manifest for recovery.
+
     servicemanager refuses to register AIDL services that are not declared in
     the caller's VINTF manifest ("NULL VINTF MANIFEST!: framework"), which made
     keystore2 panic-loop on startup. Declaring IKeystoreService/default here
     lets keystore2 register and unblocks the metadata decryption chain.
+
+    Also declares android.hidl.manager@1.2 (IServiceManager/default) so
+    hwservicemanager — the AIDL→HIDL bridge — can find itself in VINTF and
+    stays running. Without it, hwservicemanager logs
+    "HIDL is not supported on this device" and exits, which makes HIDL
+    keymaster-4-0 unable to register, and then both keymaster-4-0 and keystore2
+    crash-loop.
+
+    android.hidl.memory@1.0 passthrough is also required by HIDL binder
+    transport (hwbinder uses ashmem for shared memory).
+
     Must stay parseable by TWRP's libvintf (4.0) — keep it minimal.
 -->
 <manifest version="1.0" type="framework">
+    <!-- HIDL manager: keeps hwservicemanager alive for HIDL keymaster-4-0 -->
+    <hal format="hidl">
+        <name>android.hidl.manager</name>
+        <transport>hwbinder</transport>
+        <fqname>@1.2::IServiceManager/default</fqname>
+    </hal>
+    <!-- HIDL memory passthrough: hwbinder shared memory transport -->
+    <hal format="hidl" max-level="8">
+        <name>android.hidl.memory</name>
+        <transport arch="32+64">passthrough</transport>
+        <fqname>@1.0::IMapper/ashmem</fqname>
+    </hal>
+    <!-- AIDL keystore2 framework declaration -->
     <hal format="aidl">
         <name>android.system.keystore2</name>
         <interface>

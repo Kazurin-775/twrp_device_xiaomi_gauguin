@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Extract the minimal vendor blob set needed for keymaster-4-0 + qseecomd to run
-# inside the TWRP ramdisk (so /vendor never has to be mounted for decryption).
+# Extract the minimal vendor blob set needed for keymaster-4-0, gatekeeper-1-0
+# and qseecomd to run inside the TWRP ramdisk (so /vendor never has to be
+# mounted for decryption).
 #
-# The lib list is the union of the runtime /proc/<pid>/maps of qseecomd and
-# keymaster-4-0 pulled from a live boot of the ROM (qseecomd-maps.txt /
-# keymaster-maps.txt), plus libs found via static DT_NEEDED scanning.
+# The lib list is the union of the runtime /proc/<pid>/maps of qseecomd,
+# keymaster-4-0 and gatekeeper-1-0 pulled from a live boot of the ROM
+# (qseecomd-maps.txt / keymaster-maps.txt), plus libs found via static
+# DT_NEEDED scanning.
 #
 # Run while booted into the normal ROM with `adb root` working (read-only pulls).
 
@@ -31,6 +33,15 @@ list() { adb shell "ls -1 $1 2>/dev/null" | tr -d '\r' | grep -v '^$' || true; }
 echo "==> keymaster / qseecom binaries"
 pull /vendor/bin/qseecomd bin
 pull /vendor/bin/hw/android.hardware.keymaster@4.0-service-qti bin/hw
+
+echo "==> gatekeeper"
+GK_BIN=android.hardware.gatekeeper@1.0-service-qti
+pull "/vendor/bin/hw/$GK_BIN" bin/hw
+pull /vendor/lib64/android.hardware.gatekeeper@1.0.so lib64
+pull /vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so lib64/hw
+# Everything else the process maps (libQSEEComAPI, libkeymasterdeviceutils,
+# libqcbor, libion, libcrypto, libbase, libcutils, libutils, libhidlbase,
+# libhardware, libc++) is already covered by the static list below.
 
 echo "==> vendor libs (union of live-OS proc maps of qseecomd + keymaster)"
 LIBS="

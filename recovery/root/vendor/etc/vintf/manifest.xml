@@ -11,4 +11,12 @@
         <transport>hwbinder</transport>
         <fqname>@4.0::IKeymasterDevice/default</fqname>
     </hal>
+    <!-- gatekeeper-1-0 registers the same way as keymaster: without this
+         entry hwservicemanager rejects registration with
+         "must be in VINTF manifest in order to register/get" -->
+    <hal format="hidl">
+        <name>android.hardware.gatekeeper</name>
+        <transport>hwbinder</transport>
+        <fqname>@1.0::IGatekeeper/default</fqname>
+    </hal>
 </manifest>

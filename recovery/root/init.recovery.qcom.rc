@@ -17,16 +17,35 @@ on init
     chmod 0664 /dev/ion
     chown system system /dev/ion
 
-    # Keymaster + QSEE run from ramdisk blobs (recovery/root/vendor/) so that
-    # keystore2 can retrieve the metadata encryption key without mounting /vendor.
-    start vendor.qseecomd
-
+# init runs early-init → init → late-init (which triggers fs), and qseecomd's
+# rpmb_init_service stats /dev/block/bootdevice to locate the RPMB LUN.
+# Therefore, both qseecomd and prepare-crypto starts sit in `on fs`, after the
+# /dev/block/bootdevice symlink. If the symlink is missing it silently keeps
+# an invalid RPMB device (rpmb_init still returns 0) and the TA's later RPMB
+# callback fails — "rpmb read operation on invalid RPMB device" — killing
+# upgradeKey (-8) and metadata decrypt with it.
 on fs
     wait /dev/block/platform/soc/${ro.boot.bootdevice}
     symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
 
-on property:init.svc.vendor.qseecomd=running
+    # Keymaster + QSEE run from ramdisk blobs (recovery/root/vendor/) so that
+    # keystore2 can retrieve the metadata encryption key without mounting /vendor.
+    start vendor.qseecomd
+    start prepare-crypto
+
+# prepare-crypto waits for the super mapper devices (created by TWRP during
+# Setup_Fstab_Partitions), temp-mounts system+vendor, resetprops the real
+# patchlevels and signals crypto.ready=1. keymaster must never start before
+# that: it caches ro.vendor.build.security_patch once at service start, and
+# TWRP's TW_OVERRIDE_SYSTEM_PROPS runs after the first decrypt attempt.
+# Still no "interface" line on purpose: it would let hwservicemanager
+# lazy-start keymaster before qseecomd is ready. Gatekeeper (CE unlock)
+# shares the keymasta TA instance with keymaster; starting it alongside is
+# proven fine — the metadata begin succeeded with gatekeeper registered
+# before it (in logcat: gatekeeper started 0.4 ms after keymaster).
+on property:crypto.ready=1
     start keymaster-4-0
+    start gatekeeper-1-0
 
 # USB (gadget setup, functionfs mounts, adbd start/UDC bind) lives in
 # init.recovery.usb.rc. Here we only request the adb configuration once the
@@ -41,10 +60,25 @@ service vendor.qseecomd /vendor/bin/qseecomd
     setenv LD_LIBRARY_PATH /vendor/lib64
     seclabel u:r:recovery:s0
 
+service prepare-crypto /system/bin/prepare-crypto.sh
+    class core
+    oneshot
+    user root
+    group root
+    seclabel u:r:recovery:s0
+
 service keymaster-4-0 /vendor/bin/hw/android.hardware.keymaster@4.0-service-qti
     class core
     disabled
     user root
     group root system drmrpc
+    setenv LD_LIBRARY_PATH /vendor/lib64
+    seclabel u:r:recovery:s0
+
+service gatekeeper-1-0 /vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti
+    class core
+    disabled
+    user root
+    group root
     setenv LD_LIBRARY_PATH /vendor/lib64
     seclabel u:r:recovery:s0

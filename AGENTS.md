@@ -74,12 +74,61 @@ Matches the original gauguin ROM tree (RSA4096, not RSA2048 like newer devices).
 
 ### Service chain (all from ramdisk blobs)
 
-`init.recovery.qcom.rc` starts `vendor.qseecomd`, then `keymaster-4-0`
-(`/vendor/bin/hw/android.hardware.keymaster@4.0-service-qti`) once qseecomd is
-running. Blobs are pulled from the running ROM with `tools/extract_blobs.sh`
-(read-only adb pulls) into `recovery/root/vendor/`. The keymaster TA is loaded
-into the TEE by the bootloader from the `keymaster` partition — no TA firmware
-file exists on the filesystem.
+`init.recovery.qcom.rc` starts `vendor.qseecomd` and `prepare-crypto` at boot.
+Decryption ordering is solved entirely in the device tree (no TWRP-source
+patches), using the 17-series prepdecrypt pattern:
+
+1. `recovery/root/system/bin/prepare-crypto.sh` (oneshot service) polls for the
+   super mapper devices `/dev/block/mapper/{system,vendor}` — created by TWRP
+   during `Setup_Fstab_Partitions`, right before `Decrypt_Data()` blocks in
+   `getService(keymaster)` for up to 25 s. It temp-mounts both partitions ro,
+   reads the real patchlevels from the ROM build.props, `resetprop`s them,
+   `sed`s `/prop.default` to match, then sets `crypto.ready=1`. On any
+   failure it still sets `crypto.ready=1` so the chain stays observable in
+   logs.
+2. `on property:crypto.ready=1` starts the `keymaster-4-0` service (the real
+   HAL binary, `disabled` in rc) together with `gatekeeper-1-0` (see the
+   Gatekeeper section below). keymaster registers mid-`getService`-wait
+   with correct patchlevels cached, and TWRP's single automatic metadata
+   decrypt attempt succeeds.
+
+Why not just start keymaster from rc: it caches
+`ro.vendor.build.security_patch` once at service start, and TWRP's built-in
+override (`TW_OVERRIDE_SYSTEM_PROPS`, removed from BoardConfig) ran after the
+first decrypt attempt and bypassed init, so rc triggers on the overridden
+props never fire. The service intentionally has NO `interface` line: an
+interface mapping would let hwservicemanager lazy-start keymaster before
+qseecomd is ready. Blobs are pulled from the running ROM with
+`tools/extract_blobs.sh` (read-only adb pulls) into `recovery/root/vendor/`.
+The keymaster TA is loaded into the TEE by the bootloader from the
+`keymaster` partition — no TA firmware file exists on the filesystem.
+
+### The two-reader version-binding model (why BoardConfig carries version values)
+
+Two processes read version/patchlevel props, at different times, and both
+caches feed the TA's key-authorization check:
+
+- **keystore2** starts at `on late-init` (ramdisk `etc/init/keystore2.rc`),
+  ~10 ms **before** prepare-crypto resets anything, and reads
+  `ro.build.version.release`, `ro.build.version.security_patch` and
+  `ro.vendor.build.security_patch` once at startup (via `libkm_compat` →
+  `libkeymaster4_1support`/`libkeymint`; proven by `/proc/<pid>/maps`).
+  prepare-crypto therefore cannot influence this cache — the values must be
+  correct at build time.
+- **keymaster HAL** starts at `crypto.ready=1`, after prepare-crypto, so
+  prepare-crypto's resetprops *do* control its cache.
+
+BoardConfig.mk consequently carries a **super-version block**
+(`PLATFORM_VERSION 99.87.36`, `PLATFORM_VERSION_LAST_STABLE $(PLATFORM_VERSION)`,
+`PLATFORM_SECURITY_PATCH 2099-12-31`, `VENDOR_SECURITY_PATCH 2099-12-31`):
+ceiling values keeping every requested tag ≥ any blob's tags, so the TA's
+`begin` returns `KEY_REQUIRES_UPGRADE(-62)` and `upgradeKey` always succeeds.
+This is not hardcoded-real-value staleness — the values are upper bounds,
+not ROM values, so nothing goes stale when the ROM updates. The upgraded key
+is never persisted (keystore2 records `key_id=None`); every boot repeating
+`-62 → upgradeKey → begin` is **normal** for this configuration. Hazard
+(accepted): any key *created* under recovery would bind to the super-values;
+the decrypt path only retrieves/upgrades, never creates.
 
 ### /dev/qseecom node mode (qseecomd listener registration)
 
@@ -104,9 +153,9 @@ ueventd rules grant system access to the node.
 - `recovery/root/vendor/etc/ueventd.rc`: `/dev/qseecom 0660 system drmrpc` —
   ueventd applies this at coldboot, the durable fix
 - `init.recovery.qcom.rc`: `chmod 0660` + `chown system drmrpc` in `on init`,
-  **before** `start vendor.qseecomd` — belt-and-braces; it must precede the
-  start because our qseecomd starts `on init`, earlier than the ref trees'
-  `on fs` chmod
+  **before** `start vendor.qseecomd` — belt-and-braces; `on init` runs before
+  `on fs`, where qseecomd starts (moved there for the RPMB/bootdevice symlink
+  ordering — see the service chain section)
 
 **Why it matters:** dead listeners mean the TA cannot make reentrant callbacks
 into the normal world (RPMB, SSD, …) — a candidate contributor to the
@@ -138,6 +187,74 @@ Two red herrings worth remembering:
 - `Error getting bootctrl v1.0 module` is unrelated to decryption (AB helper,
   we set `AB_OTA_UPDATER := false` anyway).
 
+### Gatekeeper HAL (CE unlock / PIN verification)
+
+Metadata (DE) decryption alone only mounts `/data` with the default-deleted
+view. Unlocking **CE storage (the user's actual files)** requires verifying
+the user's PIN through gatekeeper to unwrap the synthetic password. TWRP's
+vold fork (`Decrypt.cpp`) binds the HAL **directly** — it first checks AIDL
+`android.hardware.gatekeeper.IGatekeeper/default`, then falls back to HIDL
+`IGatekeeper::getService()` on our ROM. `gatekeeperd` (`/system/bin/
+gatekeeperd`) is **NOT needed** — verified in code, do not chase it.
+
+The stock ROM's gatekeeper is QTI HIDL: `android.hardware.gatekeeper@1.0-
+service-qti` plus `android.hardware.gatekeeper@1.0.so` and the `-impl-qti`
+library — all three pulled by `extract_blobs.sh` (hardcoded pulls). It runs
+as a `disabled` service started from `on property:crypto.ready=1`, sharing
+the qseecomd TA stack with keymaster.
+
+Three gotchas hit during bring-up:
+1. **VINTF manifest:** the service must be declared in the device manifest
+   (`@1.0::IGatekeeper/default` fqname) or hwservicemanager rejects its
+   registration — `must be in VINTF manifest in order to register/get`,
+   binder error -2147483648, 5 s restart loop.
+2. **Service-manager lookup:** at CE time keystore2 first tries the AIDL
+   name in servicemanager, which logs `Could not find
+   android.hardware.gatekeeper.IGatekeeper/default in the VINTF manifest` —
+   that is **normal** (it's the AIDL probe before the HIDL fallback), not a
+   failure.
+3. **TA coexistence:** gatekeeper attaches to the *same* keymasta TA
+   instance as keymaster (`App is already loaded QSEE and app id = 1`). One
+   boot failed the metadata `begin` with INCOMPATIBLE_BLOCK_MODE 2 ms after
+   keymaster, which led to a 12 s `gatekeeper-delay` bisect patch — but then
+   a successful boot ran **without** any delay: gatekeeper started 0.4 ms
+   after keymaster and registered *before* the metadata `begin`, which still
+   succeeded. Same configuration, different outcome → the race theory is
+   unreproduced; starting both from `crypto.ready=1` together is the final
+   shape and the delay was removed.
+
+### RECOVERY_SDCARD_ON_DATA (the CE-decrypt fix)
+
+**Symptom:** after gatekeeper came up, the PIN page appeared but verification
+was never reached — strace on the gatekeeper service showed init, TA
+registration, then idle; no `verify` call ever arrived. Manual UI decrypt
+reported no error, DE data decrypted, CE did not.
+
+**Root cause (chain-diagnosed):** without `RECOVERY_SDCARD_ON_DATA`, TWRP's
+`datamedia` flag stays false, and:
+1. `twrp.cpp main()` treats `/sdcard` as the settings-storage partition and
+   skips the datamedia auto-detect (which requires no `/sdcard` partition in
+   the fstab),
+2. after DE decrypt, `PartitionManager::UnMount_Main_Partitions()`
+   unmounts `/data` (`if (!datamedia) UnMount_By_Path("/data", true)`),
+3. when the user enters the PIN, `Decrypt_Device()` calls
+   `Mount_By_Path("/data")` as its gate — but `/data`'s
+   `Actual_Block_Device` is still the raw `/dev/block/sda35` because
+   `Find_Actual_Block_Device()` only maps `Decrypted_Block_Device` while
+   `Is_Decrypted` is true, and stock `Decrypt_FBE_DE()` deliberately resets
+   `Is_Decrypted=false` after the DE mount. Mounting raw sda35 (already
+   mounted via dm) fails with **EBUSY**, `Decrypt_Device` silently returns,
+   and `IGatekeeper::verify` is never called.
+
+**Fix:** `RECOVERY_SDCARD_ON_DATA := true` in BoardConfig.mk — sets
+`datamedia=true` from process start, `/sdcard` maps to `/data/media/0`, and
+`/data` stays mounted across the DE→CE transition.
+
+**Verified outcome:** PIN accepted → `add_auth_token` in keystore2 →
+synthetic password blob unwrapped → `User 0 Decrypted Successfully!` →
+`/data/media/0` shows the user's intact files. Full chain (metadata DE +
+CE) works end-to-end.
+
 ### USB
 
 `init.recovery.usb.rc` (CAF/AOSP standard) owns the whole gadget chain:
@@ -153,12 +270,21 @@ TWRP's libvintf is 4.0 — it cannot parse ROM manifests (`manifest.version 9.0`
 fails, hwservicemanager then refuses ALL HAL registrations).
 
 - **Device manifest** `recovery/root/vendor/etc/vintf/manifest.xml` — keymaster
-  HAL, `version="1.0"` (a bare `<manifest>` also fails to parse). Lets
-  keymaster register in hwservicemanager.
+  HAL `@4.0::IKeymasterDevice/default` and gatekeeper HAL
+  `@1.0::IGatekeeper/default`, `version="1.0"` (a bare `<manifest>` also fails
+  to parse). Without a fqname entry hwservicemanager rejects the
+  registration with `must be in VINTF manifest in order to register/get` and
+  the HAL loops in a 5 s restart cycle (-2147483648).
 - **Framework manifest** `recovery/root/system/etc/vintf/manifest.xml` — AIDL
   `IKeystoreService/default`. servicemanager checks the framework manifest on
   `add`; if it's NULL (missing), keystore2 panics in a lazy-start loop with
-  `NULL VINTF MANIFEST!: framework`.
+  `NULL VINTF MANIFEST!: framework`. It also declares two HIDL infra entries
+  the HIDL transport needs in recovery: `android.hidl.manager@1.2::
+  IServiceManager/default` (without it hwservicemanager logs
+  `HIDL is not supported on this device` and exits, so HIDL keymaster-4-0
+  can never register and both keymaster and keystore2 crash-loop) and
+  `android.hidl.memory@1.0::IMapper/ashmem` passthrough (hwbinder shared
+  memory).
 
 `extract_blobs.sh` intentionally does NOT pull either manifest.
 
@@ -168,37 +294,39 @@ fails, hwservicemanager then refuses ALL HAL registrations).
   post_process_props auto-appends `persist.sys.usb.config=none` to each
   section; the merged ramdisk prop.default ends on `none` (last section wins)
   and adbd never starts at boot.
-- `TW_OVERRIDE_SYSTEM_PROPS` + `TW_OVERRIDE_PROPS_ADDITIONAL_PARTITIONS := vendor system`
-  (BoardConfig.mk): TWRP's twrp.cpp mounts /system and /vendor at boot, reads
-  `ro.build.version.security_patch` from system's build.prop and
-  `ro.vendor.build.security_patch` from vendor's build.prop, then calls
-  `resetprop` to override the ramdisk defaults. This matches the real HLOS
-  patchlevels so the keymaster TA never demands a key upgrade. The previous
-  hardcoded `2099-12-31` prop was removed — it triggered TA upgrade demand
-  which the HIDL keymaster-4-0 upgrade path can't complete.
+- `recovery/root/system/bin/prepare-crypto.sh`: reads the real HLOS patchlevels
+  from the /system and /vendor build.props and `resetprop`s them before
+  keymaster starts — see the service chain section above. Hardcoding real
+  patchlevels into prop.default was tried and ROLLED BACK (project principle:
+  no values that silently go stale against a moving ROM); the earlier
+  `TW_OVERRIDE_SYSTEM_PROPS` macro was torn down (it ran after the first
+  decrypt attempt and its writes bypassed init). The previous hardcoded
+  `2099-12-31` prop was removed — it triggered TA upgrade demand which the
+  HIDL keymaster-4-0 upgrade path couldn't complete in that era (superseded
+  by the full super-version block; see the two-reader version-binding model
+  section above).
 - `PRODUCT_PACKAGES += libsqlite`: keystore2 needs it; ROM's libsqlite.so
   references `ucol_setStrength_android` missing in TWRP 12.1's ICU.
 
-### Decryption status — OPEN (patchlevel binding hypothesis)
+### Decryption status — WORKING
 
-**Proposed fix (not yet tested):** Switch to `twrp-16.0` manifest and use
-`TW_OVERRIDE_SYSTEM_PROPS` to read the real HLOS patchlevels from
-/system and /vendor build.prop at boot, matching the blob's creation values
-so the TA never demands an upgrade. This is the same mechanism the
-`recovery_device_generic_marmalade` reference tree uses.
+Full end-to-end decryption verified against the PixelOS ROM: metadata (DE)
+key retrieved and `/data` mounted, PIN verified through the gatekeeper HAL,
+synthetic password unwrapped, CE storage unlocked — `User 0 Decrypted
+Successfully!`, `/data/media/0` intact.
 
-**Root cause analysis:**
-- TWRP 12.1 with hardcoded `2099-12-31` patchlevel triggers TA demand for
-  key upgrade (`KM_ERROR_KEY_REQUIRES_UPGRADE` = -62)
-- HIDL keymaster-4-0's upgrade path breaks in TWRP's partial TEE state
-  (`-8` = INCOMPATIBLE_BLOCK_MODE, or `-33` = INVALID_KEY_BLOB)
-- Fix: match HLOS patchlevels so TA accepts `begin` directly without upgrade
+The debugging story lives in the sections above:
+- patchlevel timing → `prepare-crypto` service chain (top of Encryption/FBE)
+- keystore2 early-read of version props → super-version BoardConfig block
+  (two-reader version-binding model)
+- qseecomd listener failures → `/dev/qseecom` node mode
+- metadata `begin` `-8 INCOMPATIBLE_BLOCK_MODE` → `/dev/ion` node mode
+- PIN never reaching `IGatekeeper::verify` → `RECOVERY_SDCARD_ON_DATA`
 
-**Remaining risks:**
-- `TW_OVERRIDE_SYSTEM_PROPS` mounts/unmounts partitions — need to verify the
-  logical partition paths resolve correctly before TWRP runs
-- If the override doesn't fire (e.g., build.prop not found), we're back to
-  2099-12-31 → same failure
+**Known soft failure mode:** if the super mapper devices never appear,
+prepare-crypto times out after 30 s and fails soft (keymaster starts with
+ramdisk patchlevels → TA demands upgrade → old failure, clearly logged as
+`prepare-crypto: mapper devices never appeared`).
 
 Gauguin uses Qualcomm File-Based Encryption with `dm-default-key`. Decryption is handled by `qcom_decrypt` + `qcom_decrypt_fbe` from `hardware/qcom-caf/common` (pulled via `BOARD_USES_QCOM_FBE_DECRYPTION := true`).
 
@@ -266,6 +394,9 @@ Never run: `su`, `dd` to block devices, `fastboot flash` anything without explic
 - Crypto: dm-default-key FBE + inlinecrypt + wrappedkey_v0
 - persist is ext4 at 0x438 magic, 128 MB
 - `/dev/block/by-name/` has no `_a`/`_b` suffixes → non-A/B confirmed
+- **FBE decryption fully working** (DE + CE): metadata key retrieval,
+  gatekeeper PIN verify, synthetic password unwrap, `/data/media/0`
+  accessible with user data intact
 
 ## Reference Trees
 
