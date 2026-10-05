@@ -2,3 +2,4 @@
 # threads; without this rule the node stays 0600 root:root and every listener
 # open fails with EACCES.
 /dev/qseecom              0660   system     drmrpc
+/dev/ion                  0664   system     system

@@ -112,6 +112,32 @@ ueventd rules grant system access to the node.
 into the normal world (RPMB, SSD, …) — a candidate contributor to the
 metadata-key `begin` failure (`-8`/`-7`).
 
+### /dev/ion node mode (the fix that made metadata decryption work)
+
+Same DAC mechanism, second device node: after the uid drop, qseecomd's qisl
+(id 36864) and gp_reqcancel (id 4352) listeners allocate ION memory and log
+`open /dev/ion failed: Permission denied` / `ION memalloc failed` on the
+driver-default `0600 root:root` node. The qseecom fix alone still left these
+two `-1`s — and the metadata-key `begin` kept returning `-8
+INCOMPATIBLE_BLOCK_MODE`.
+
+**Fix** (same two layers as /dev/qseecom, values from the 17-series refs):
+`/dev/ion 0664 system system` in `vendor/etc/ueventd.rc` plus `chmod 0664` +
+`chown system system` in `on init` before qseecomd starts.
+
+**Verified outcome:** all listener registrations return 0, and the entire
+decryption chain comes alive in the same boot — metadata key retrieved,
+`/data` mounted (dm-5), `fscrypt_init_user0` installs the user-0 DE key,
+all DE policies verified. The `-8` never reappeared with no vold-side changes,
+which also retroactively confirms it was listener-driven (the TA could not
+reach its normal-world services), not a key-parameter problem.
+
+Two red herrings worth remembering:
+- `libspl.so not found` (listener index 8) is **HLOS-normal** — the ROM ships
+  no such library anywhere; do not chase it or add it to extract_blobs.
+- `Error getting bootctrl v1.0 module` is unrelated to decryption (AB helper,
+  we set `AB_OTA_UPDATER := false` anyway).
+
 ### USB
 
 `init.recovery.usb.rc` (CAF/AOSP standard) owns the whole gadget chain:
